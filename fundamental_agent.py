@@ -5,7 +5,11 @@ import urllib.parse
 import pandas as pd
 from datetime import datetime
 
-def get_fundamentals(ticker):
+def get_fundamentals(ticker, is_crisis_mode=False):
+    """
+    獲取個股基本面與全網情緒數據
+    加入 is_crisis_mode 參數，用於動態退守斐波那契安全防線
+    """
     print(f"📡 啟動【矩陣式深度基本面探勘】：全網大數據與價值位階 (2026) - {ticker}")
     
     result = {
@@ -19,8 +23,8 @@ def get_fundamentals(ticker):
     }
 
     raw_high = raw_low = 0.0
-    unique_titles = set() # 使用集合(Set)確保新聞標題不重複
-    target_news_count = 50 # 設定目標抓取量
+    unique_titles = set()
+    target_news_count = 50
 
     # 1. 建立個股矩陣對照表
     stock_map = {
@@ -84,27 +88,21 @@ def get_fundamentals(ticker):
     # ==========================================
     print("  🔍 正在啟動全網爬蟲，目標：突破 50 篇獨立新聞...")
     
-    # 建立精確打擊的搜尋語法
     queries_zh = [
-        f"{mapping['name_cn']} {mapping['name_en']}", # 核心
-        f"{mapping['name_cn']} {' OR '.join(mapping['products'][:2]) if mapping['products'] else ''}", # 產品
-        f"{' OR '.join(mapping['sc'][:2]) if mapping['sc'] else ''} 需求 OR 庫存", # 供應鏈
-        
-        # --- 專業財經媒體 ---
-        f"{mapping['name_cn']} site:businesstoday.com.tw OR site:cw.com.tw", # 今周刊, 天下雜誌
-        f"{mapping['name_cn']} site:cnyes.com OR site:moneydj.com", # 鉅亨網, MoneyDJ
-        f"{mapping['name_cn']} site:ctee.com.tw OR site:money.udn.com", # 工商時報, 經濟日報
-        f"{mapping['name_cn']} site:yahoo.com.tw", # Yahoo財經
-        
-        # --- 各大散戶與業內論壇 ---
-        f"{mapping['name_cn']} site:ptt.cc/bbs/Stock", # PTT 股版
-        f"{mapping['name_cn']} site:mobile01.com", # Mobile01
-        f"{mapping['name_cn']} site:dcard.tw/f/money", # Dcard 理財/股票版
+        f"{mapping['name_cn']} {mapping['name_en']}", 
+        f"{mapping['name_cn']} {' OR '.join(mapping['products'][:2]) if mapping['products'] else ''}", 
+        f"{' OR '.join(mapping['sc'][:2]) if mapping['sc'] else ''} 需求 OR 庫存", 
+        f"{mapping['name_cn']} site:businesstoday.com.tw OR site:cw.com.tw", 
+        f"{mapping['name_cn']} site:cnyes.com OR site:moneydj.com", 
+        f"{mapping['name_cn']} site:ctee.com.tw OR site:money.udn.com", 
+        f"{mapping['name_cn']} site:yahoo.com.tw", 
+        f"{mapping['name_cn']} site:ptt.cc/bbs/Stock", 
+        f"{mapping['name_cn']} site:mobile01.com", 
+        f"{mapping['name_cn']} site:dcard.tw/f/money", 
     ]
     
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
-    # 執行中文搜索 (直到滿足 50 篇或搜完為止)
     for q in queries_zh:
         if len(unique_titles) >= target_news_count:
             break
@@ -114,13 +112,11 @@ def get_fundamentals(ticker):
             resp = requests.get(rss_url, headers=headers, timeout=10)
             if resp.status_code == 200:
                 root = ET.fromstring(resp.content)
-                # 每個 Query 允許抓取最多 20 篇，加入 Set 自動剔除重複
                 for item in root.findall('.//item')[:20]:
                     unique_titles.add(item.find('title').text)
         except Exception: 
             continue
 
-    # 執行英文搜索補足國際視角
     if mapping['name_en'] and len(unique_titles) < target_news_count + 10:
         try:
             en_q = urllib.parse.quote(f"{mapping['name_en']} stock OR demand OR inventory")
@@ -133,58 +129,39 @@ def get_fundamentals(ticker):
         except Exception: 
             pass
 
-    # 將 Set 轉回 List 以便計數
     all_titles = list(unique_titles)
 
     # 奧地利學派關鍵字分析
-    # ==========================================
-    # 擴充版：大數據矩陣情緒字典 (各 > 75 詞)
-    # ==========================================
     pos_keywords = [
-        # 分析師與市場主觀預期
         '看好', '看多', '看高', '看長', '樂觀', '買進', '加碼', '推薦', '首選', '青睞', 
         '唱多', '按讚', '升評', '調升', '上調', '上修', '買盤', '進場', '做多', '目標價調升', 
-        '上看', '強勢', '漲停',
-        # 營收與財報客觀數據
-        '創高', '成長', '增加', '暴增', '大增', '雙位數成長', '躍升', '攀升', '創紀錄', 
-        '飆升', '翻倍', '創新高', '突破', '超乎預期', '擊敗預期', '賺贏', '獲利亮眼', '轉虧為盈',
-        # 奧地利學派：真實供需與產能
-        '滿載', '急單', '追加', '去化', '供不應求', '拉貨', '回溫', '爆單', '訂單湧入', 
+        '上看', '強勢', '漲停', '創高', '成長', '增加', '暴增', '大增', '雙位數成長', '躍升', 
+        '攀升', '創紀錄', '飆升', '翻倍', '創新高', '突破', '超乎預期', '擊敗預期', '賺贏', '獲利亮眼', 
+        '轉虧為盈', '滿載', '急單', '追加', '去化', '供不應求', '拉貨', '回溫', '爆單', '訂單湧入', 
         '產能吃緊', '缺貨', '漲價', '訂單滿手', '排程滿載', '產能利用率滿載', '擴產', '擴廠',
-        # 市場競爭與產品熱度
         '熱銷', '大賣', '暢銷', '獨家', '搶下', '奪單', '受惠', '迎來商機', '爆發', 
-        '復甦', '觸底反彈', '谷底回升',
-        # 國際英文媒體通用詞彙
-        'Beat', 'Strong', 'Demand', 'Surge', 'Outperform', 'Buy', 'Upgrade', 'Bullish', 'High', 'Growth'
+        '復甦', '觸底反彈', '谷底回升', 'Beat', 'Strong', 'Demand', 'Surge', 'Outperform', 
+        'Buy', 'Upgrade', 'Bullish', 'High', 'Growth'
     ]
     neg_keywords = [
-        # 分析師與市場主觀預期
         '看壞', '看空', '看低', '看短', '悲觀', '賣出', '減碼', '降評', '調降', '下調', 
         '下修', '唱衰', '棄息', '倒貨', '提款', '逃命', '停損', '做空', '目標價下調', 
-        '下看', '弱勢', '跌停',
-        # 營收與財報客觀數據
-        '衰退', '下滑', '減少', '大減', '暴跌', '縮水', '跌破', '創低', '探底', 
-        '不如預期', '獲利衰退', '虧損', '轉盈為虧', '旺季不旺', '營收雙減',
-        # 奧地利學派：真實供需與產能 (資本錯置預警)
+        '下看', '弱勢', '跌停', '衰退', '下滑', '減少', '大減', '暴跌', '縮水', '跌破', 
+        '創低', '探底', '不如預期', '獲利衰退', '虧損', '轉盈為虧', '旺季不旺', '營收雙減',
         '砍單', '庫存', '延遲', '產能利用率下滑', '調整', '庫存積壓', '去化緩慢', '供過於求', 
         '塞港', '滯銷', '掉單', '抽單', '違約', '產能閒置', '減產', '暫停擴產',
-        # 市場競爭與產品熱度
         '疲弱', '慘淡', '萎縮', '逆風', '衝擊', '拖累', '踩雷', '認列損失', '削價競爭', 
-        '價格戰', '跌價', '崩盤', '泡沫', '寒冬',
-        # 黑天鵝與宏觀風險詞彙
-        '戰爭', '空襲', '制裁', '天災', '地震', '斷鏈', '疫情', '封鎖', 
-        '降息預期落空', '通膨反撲', 'CPI超預期', '倒閉', '破產', '違約',
-        'War', 'Conflict', 'Sanctions', 'Disaster', 'Bankruptcy', 'Crisis'
-        # 國際英文媒體通用詞彙
-        'Miss', 'Weak', 'Inventory', 'Slump', 'Downgrade', 'Sell', 'Underperform', 'Bearish', 'Low', 'Decline'
+        '價格戰', '跌價', '崩盤', '泡沫', '寒冬', '戰爭', '空襲', '制裁', '天災', '地震', 
+        '斷鏈', '疫情', '封鎖', '降息預期落空', '通膨反撲', 'CPI超預期', '倒閉', '破產', 
+        '違約', 'War', 'Conflict', 'Sanctions', 'Disaster', 'Bankruptcy', 'Crisis',
+        'Miss', 'Weak', 'Inventory', 'Slump', 'Downgrade', 'Sell', 'Underperform', 
+        'Bearish', 'Low', 'Decline'
     ]
     
     pos_hits = sum(1 for t in all_titles for k in pos_keywords if k in t)
     neg_hits = sum(1 for t in all_titles for k in neg_keywords if k in t)
 
-    # ==========================================
-    # 🛠️ 內部數據核實面板 (Telemetry Monitor)
-    # ==========================================
+    # 內部數據核實面板
     print("\n" + "⚙️ " + "-"*54)
     print("【模組內部數據監測 (Telemetry Monitor - Matrix V3)】")
     print(f"  ▶ 標的代號: {ticker} ({mapping['name_cn']})")
@@ -201,27 +178,38 @@ def get_fundamentals(ticker):
     # 4. 邏輯判定與給分區塊
     # ==========================================
     
-    # --- (A) 斐波那契回測給分 (滿分 10) ---
+    # --- (A) 斐波那契動態柔性給分 (滿分 15) ---
     if raw_high > raw_low:
         diff = raw_high - raw_low
-        fibo_0382 = raw_high - (diff * 0.382)
-        fibo_0500 = raw_high - (diff * 0.500)
-        fibo_0618 = raw_high - (diff * 0.618)
-        fibo_0786 = raw_high - (diff * 0.786)
         
-        result["notes"].append(f"📐 【斐波那契】52週高低: {raw_high:.1f} - {raw_low:.1f}")
+        # 1. 動態防線偏移 (Dynamic Shift)
+        # 一般模式從 0.5 (半山腰) 開始給分，危機模式嚴格退守至 0.618
+        safe_start_ratio = 0.618 if is_crisis_mode else 0.500
+        safe_start_price = raw_high - (diff * safe_start_ratio)
         
-        if current_price <= fibo_0786:
-            result["fibo_score"] = 10
-            result["notes"].append(f"🎯 【技術支撐】現價 ({current_price:.1f}) 跌破 0.786 深水回測位 ({fibo_0786:.1f})，極佳左側接刀點 (+10)")
-        elif current_price <= fibo_0618:
-            result["fibo_score"] = 7
-            result["notes"].append(f"🟢 【技術支撐】現價落在 0.618 黃金支撐位 ({fibo_0618:.1f}) 附近，具備反彈契機 (+7)")
-        elif current_price <= fibo_0500:
-            result["fibo_score"] = 4
-            result["notes"].append(f"⚖️ 【技術支撐】現價落在 0.500 半山腰 ({fibo_0500:.1f})，中性偏空 (+4)")
+        # 定義極致恐慌深水區 (定義跌幅達 85% 為極限滿分區)
+        deep_water_price = raw_high - (diff * 0.850) 
+        
+        result["notes"].append(f"📐 【斐波那契】52週高低: {raw_high:.1f} - {raw_low:.1f} (動態起算防線: {safe_start_ratio})")
+        
+        if current_price >= safe_start_price:
+            # 淺水區 (包含 0.382) 直接濾除雜訊，不給予左側買進訊號
+            result["fibo_score"] = 0
+            mode_str = "危機模式" if is_crisis_mode else "一般模式"
+            result["notes"].append(f"⚠️ 【技術支撐】現價 ({current_price:.1f}) 未達 {mode_str} 安全邊際 ({safe_start_price:.1f})，視為雜訊 (+0)")
         else:
-            result["notes"].append(f"⚠️ 【技術支撐】現價偏高，未達 0.382 顯著回檔位，不符合左側原則 (+0)")
+            # 2. 柔性映射 (Continuous Mapping)
+            # 將股價在安全區間內的深度，轉換為 0~1 的比例
+            ratio = (safe_start_price - current_price) / (safe_start_price - deep_water_price)
+            ratio = max(0.0, min(1.0, ratio)) # 箝制在 0~1 之間
+            
+            # 3. 非線性增益 (Non-linear Gain)
+            # 引入指數 1.5，讓價格越深，加分斜率越陡 (強力獎勵深水區接刀)
+            max_fibo_score = 15
+            fibo_score = int((ratio ** 1.5) * max_fibo_score)
+            
+            result["fibo_score"] = fibo_score
+            result["notes"].append(f"🎯 【動態支撐】現價 ({current_price:.1f}) 突破防線，非線性深水補償啟動 (+{fibo_score})")
 
     # --- (B) 本益比河流圖給分 (滿分 15) ---
     if result["eps"] > 0:

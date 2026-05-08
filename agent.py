@@ -3,169 +3,188 @@ import fundamental_agent
 import us_macro
 import global_macro
 import yfinance as yf
+import pandas as pd
 
-def run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix):
+def calculate_dynamic_score(current_val, min_val, max_val, max_score, inverse=False):
+    """
+    動態歸一化引擎 (Dynamic Normalizer)
+    將當前數值平滑映射到 0 ~ max_score 區間，消除硬編碼帶來的分數斷層。
+    """
+    if max_val == min_val: return 0
+    ratio = max(0, min(1, (current_val - min_val) / (max_val - min_val)))
+    if inverse:
+        ratio = 1 - ratio
+    return int(ratio * max_score)
+
+def run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix, futures_history_5d=None, bias_ratio_240ma=None, futures_min=-50000, futures_max=10000):
     market_str = "台股" if is_tw_stock else "美股"
-    print(f"\n[AI Agent] 啟動左側交易診斷程序 - 標的：{ticker} ({market_str})")
-    print("="*64)
+    print(f"\n[何景澤 AI 交易探員 - 2026 穩定版] 啟動左側交易診斷程序 - 標的：{ticker} ({market_str})")
+    print("="*70)
     
     total_score = 0
     agent_notes = []
-
-    # ==========================================
-    # 0. 提前抓取技術面 
-    # ==========================================
-    print("🔍 啟動技術面探測 (確保不盲目接刀)...")
-    macd_res = MACD.get_40_days_macd(ticker)
-    rsi_res = RSI.get_40_days_rsi(ticker)
-    curr_rsi = rsi_res['RSI'].iloc[-1] if rsi_res is not None and not rsi_res.empty else 50.0
-
-    # ==========================================
-    # 1. 戰略層：全球資金流向與避險掃描 (宏觀防禦)
-    # ==========================================
-    print("🔍 執行大趨勢與宏觀資金輪動掃描...")
     
+    # 系統狀態變數
+    is_crisis_mode = False
+    buy_threshold = 70
+    accumulate_threshold = 45
+
+    # ==========================================
+    # Tier 1: 戰略狀態切換 (Macro & Black Swan)
+    # ==========================================
+    print("🛡️ Tier 1: 宏觀環境與流動性掃描...")
     try:
         macro_data = global_macro.get_capital_flow_status()
         total_score += macro_data.get("macro_score", 0)
-        for n in macro_data.get("notes", []):
-            agent_notes.append(n)
-            
+        
+        # 黑天鵝觸發「危機模式」提高建倉門檻
         if macro_data.get("is_black_swan"):
-            total_score -= 30 
-            agent_notes.append("🛑 【系統強制覆寫】：偵測到黑天鵝級避險資金流動，總分重罰，嚴禁接刀！ (-30)")
+            is_crisis_mode = True
+            buy_threshold = 85          
+            accumulate_threshold = 60   
+            agent_notes.append("🚨 【危機模式啟動】：偵測到黑天鵝級別避險，系統自動調高安全邊際，嚴格審核基本面！")
+        else:
+            for n in macro_data.get("notes", []):
+                agent_notes.append(n)
     except Exception as e:
         agent_notes.append(f"⚠️ 資金流向掃描異常: {e}")
 
     # ==========================================
-    # 2. 戰略層：外資籌碼與市場情緒 
+    # Tier 2: 價值基底與基本面護城河 (Fundamentals)
     # ==========================================
-    try: GAFI.get_gafi_v2026()
-    except: pass
+    print("🏗️ Tier 2: 價值基底與護城河驗證...")
+    
+    # 傳遞 is_crisis_mode 進行動態防線連動
+    fund_data = fundamental_agent.get_fundamentals(ticker, is_crisis_mode=is_crisis_mode)
+    
+    fund_score = fund_data.get("pe_score", 0) + fund_data.get("fibo_score", 0) + fund_data.get("sd_score", 0)
+    
+    # 危機模式下的動態權重調整：基本面分數權重放大 1.2 倍
+    if is_crisis_mode:
+        fund_score = int(fund_score * 1.2)
+        agent_notes.append(f"⚓ 黑天鵝防禦: 基本面權重已放大，當前價值基底得分 (+{fund_score})")
+    
+    total_score += fund_score
+    for n in fund_data.get("notes", []):
+        agent_notes.append(n)
+
+    # 乖離率錯殺補償
+    if bias_ratio_240ma is not None and bias_ratio_240ma < -25:
+        panic_bonus = calculate_dynamic_score(abs(bias_ratio_240ma), 25, 40, 15)
+        total_score += panic_bonus
+        agent_notes.append(f"📉 極端錯殺補償: 年線乖離率過大 ({bias_ratio_240ma}%)，給予恐慌溢價加分 (+{panic_bonus})")
+
+    # ==========================================
+    # Tier 3: 戰術觸發 - 動態籌碼與情緒精算
+    # ==========================================
+    print("⚡ Tier 3: 技術面與籌碼動態響應 (自適應百分位版)...")
+    
+    rsi_res = RSI.get_40_days_rsi(ticker)
+    curr_rsi = rsi_res['RSI'].iloc[-1] if rsi_res is not None and not rsi_res.empty else 50.0
+
+    # 1. 具備「鈍化防禦」的 RSI 動態給分
+    if rsi_res is not None and not rsi_res.empty:
+        # 計算近 10 日內 RSI < 30 的天數
+        days_under_30 = (rsi_res['RSI'].tail(10) < 30).sum()
+        
+        if days_under_30 >= 4:
+            agent_notes.append(f"⚠️ 技術面陷阱: 近 10 日有 {days_under_30} 天 RSI < 30，處於強勢空頭【鈍化區】，沒收接刀加分 (+0)")
+        elif curr_rsi <= 40:
+            rsi_score = calculate_dynamic_score(curr_rsi, 15, 40, 15, inverse=True)
+            total_score += rsi_score
+            agent_notes.append(f"🎯 技術面 (動態 RSI): 超賣水位 ({curr_rsi:.1f})，未見鈍化跡象 (+{rsi_score})")
 
     if is_tw_stock:
-        print(f"\n📊 【台股 VIX】 接收手動輸入數值: {manual_vix:.2f}")
-        if manual_vix >= 30:
-            total_score += 15
-            agent_notes.append(f"📈 大趨勢 (台股VIX): 極度恐慌 ({manual_vix:.2f})，符合左側買進條件 (+15)")
-        elif manual_vix >= 20:
-            total_score += 10
-            agent_notes.append(f"📈 大趨勢 (台股VIX): 市場波動加劇 ({manual_vix:.2f}) (+10)")
+        # 2. 台股 VIX 動態給分
+        vix_score = calculate_dynamic_score(manual_vix, 15, 35, 15)
+        total_score += vix_score
+        agent_notes.append(f"📈 恐慌指數 (VIX): 波動率溢價 ({manual_vix:.2f}) (+{vix_score})")
 
-        # 🛑 【籌碼核爆區】：台指期貨外資空單 (核心權重)
-        if manual_futures < -45000:
-            total_score -= 25
-            agent_notes.append(f"🚨 警告 (籌碼核災)：外資期指空單高達 {manual_futures:+,} 口！大盤處於系統性風險邊緣，嚴禁加碼 (-25)")
-        elif manual_futures < -30000:
-            if curr_rsi >= 50:
-                total_score -= 10
-                agent_notes.append(f"🛑 警訊 (壓盤嚴重)：外資空單重兵部署 ({manual_futures:+,} 口) 且位階未觸底，提防大跌 (-15)")
+        # 3. 期指外資空單 (百分位數 Percentile 正規化)
+        if futures_max != futures_min:
+            position_ratio = (manual_futures - futures_max) / (futures_min - futures_max)
+            position_ratio = max(0.0, min(1.0, position_ratio)) 
+            penalty = int(position_ratio * 25)
+            
+            if penalty > 10:
+                total_score -= penalty
+                agent_notes.append(f"🚨 宏觀籌碼壓力: 外資部位 ({manual_futures:+,} 口) 處於低檔 {position_ratio*100:.1f}% 分位，風險折減 (-{penalty})")
             else:
-                total_score -= 5
-                agent_notes.append(f"⚠️ 警訊 (外資承壓)：空單沉重 ({manual_futures:+,} 口)，雖有超賣跡象仍需謹慎 (-5)")
-        elif manual_futures < -15000:
-            agent_notes.append(f"⚖️ 大趨勢 (期指): 外資空單水位偏高 ({manual_futures:+,} 口) (+0)")
-        else:
-            total_score += 10
-            agent_notes.append(f"🟢 大趨勢 (期指): 外資部位相對安全 ({manual_futures:+,} 口) (+10)")
+                total_score += 10
+                agent_notes.append(f"🟢 宏觀籌碼健康: 外資部位 ({manual_futures:+,} 口) 未達極端壓力區 (+10)")
+        
+        # 期指 ROC (變化率) 檢測
+        if futures_history_5d is not None:
+            short_increase = abs(manual_futures) - abs(futures_history_5d)
+            if short_increase > 10000:
+                total_score -= 10
+                agent_notes.append(f"🛑 趨勢警告 (期指 ROC): 空單 5 日內異常激增 ({short_increase:+,} 口) (-10)")
 
-        # 散戶多空比聯動
+        # 4. 【微觀權重提升】個股法人逆勢吃貨 (滿分 20 分)
+        try:
+            stock_df = foreign_flow_stock.get_institutional_flow(ticker)
+            if stock_df is not None and not stock_df.empty:
+                net_buy = pd.to_numeric(stock_df['buy'], errors='coerce').sum() - pd.to_numeric(stock_df['sell'], errors='coerce').sum()
+                net_buy_lots = int(net_buy / 1000) 
+                
+                if net_buy_lots > 0:
+                    micro_score = calculate_dynamic_score(net_buy_lots, 0, 5000, 20)
+                    total_score += micro_score
+                    agent_notes.append(f"🛡️ 【微觀籌碼護城河】: 法人逆勢買超 {net_buy_lots:+,} 張，抵銷大盤弱勢 (+{micro_score})")
+                elif net_buy_lots < -3000:
+                    total_score -= 10
+                    agent_notes.append(f"⚠️ 個股提款機: 法人同步拋售該股 ({net_buy_lots:+,} 張)，微觀籌碼潰散 (-10)")
+        except Exception as e: 
+            agent_notes.append(f"⚠️ 個股法人籌碼讀取失敗: {e}")
+
+        # 5. 散戶籌碼動態聯動
         try: 
             retail_data = retail_sentiment.get_retail_sentiment_fixed()
             r_ratio = retail_data.get("ratio", 0)
-            if r_ratio <= -15:
-                total_score += 20
-                agent_notes.append(f"📊 散戶籌碼: 散戶極度看空 ({r_ratio:.1f}%)，具備強大反向買進動能 (+20)")
-            elif r_ratio >= 15:
-                total_score -= 10
-                agent_notes.append(f"⚠️ 散戶籌碼: 散戶過度追多 ({r_ratio:.1f}%)，籌碼混亂不宜接刀 (-10)")
-            else:
-                total_score += 5
-                agent_notes.append(f"⚖️ 散戶籌碼: 心理偏差中性 ({r_ratio:.1f}%) (+5)")
-        except: pass
-
-        try: foreign_flow.get_market_institutional_flow()
+            if r_ratio < 0:
+                r_score = calculate_dynamic_score(abs(r_ratio), 0, 30, 15)
+                total_score += r_score
+                agent_notes.append(f"📊 散戶反指標: 散戶看空 ({r_ratio:.1f}%)，具反向動能 (+{r_score})")
+            elif r_ratio > 10:
+                r_penalty = calculate_dynamic_score(r_ratio, 10, 30, 10)
+                total_score -= r_penalty
+                agent_notes.append(f"⚠️ 散戶擁擠: 散戶追多 ({r_ratio:.1f}%)，籌碼凌亂 (-{r_penalty})")
         except: pass
 
     else:
-        # 美股邏輯
-        vix_val = 20.0
+        # 美股專用 VIX 與宏觀邏輯
         try:
             vix_monitor.get_us_vix_monitor() 
             vix_df = yf.Ticker("^VIX").history(period="1d")
             vix_val = float(vix_df['Close'].iloc[-1])
+            us_vix_score = calculate_dynamic_score(vix_val, 15, 40, 20)
+            total_score += us_vix_score
+            agent_notes.append(f"📈 恐慌指數 (美股 VIX): 波動率溢價 ({vix_val:.2f}) (+{us_vix_score})")
         except Exception: pass
         
-        if vix_val >= 30:
-            total_score += 25
-            agent_notes.append(f"📈 大趨勢 (美股VIX): 全球極度恐慌 ({vix_val:.2f})，大膽執行左側建倉 (+25)")
-        elif vix_val >= 20:
-            total_score += 15
-            agent_notes.append(f"📈 大趨勢 (美股VIX): 波動率上升 ({vix_val:.2f})，逐步往下承接 (+15)")
-            
         us500_data = us_macro.get_us500_trend()
         total_score += us500_data.get("score", 0)
         for n in us500_data.get("notes", []):
             agent_notes.append(n)
 
     # ==========================================
-    # 3. 戰術層：基本面、估值與回測位階 
+    # 最終診斷與行動建議
     # ==========================================
-    print("🔍 執行價值河流圖、斐波那契與大數據新聞掃描...")
-    fund_data = fundamental_agent.get_fundamentals(ticker)
-    
-    total_score += fund_data.get("pe_score", 0)
-    total_score += fund_data.get("fibo_score", 0)
-    total_score += fund_data.get("sd_score", 0)
-    
-    for n in fund_data["notes"]:
-        agent_notes.append(n)
-
-    # ==========================================
-    # 4. 執行層：技術面給分 
-    # ==========================================
-    rsi_max_score = 10 if is_tw_stock else 15
-    if curr_rsi < 30:
-        total_score += rsi_max_score
-        agent_notes.append(f"🎯 技術面 (RSI): 處於極度超賣區 ({curr_rsi:.1f})，絕佳左側買點 (+{rsi_max_score})")
-    elif curr_rsi < 45:
-        total_score += (rsi_max_score // 2)
-        agent_notes.append(f"🔎 技術面 (RSI): 相對低檔 ({curr_rsi:.1f}) (+{rsi_max_score // 2})")
-    else:
-        agent_notes.append(f"🔥 技術面 (RSI): 偏高或過熱 ({curr_rsi:.1f})，不符左側建倉原則 (+0)")
-
-    if is_tw_stock:
-        net_stk_lots = 0
-        try:
-            stock_df = foreign_flow_stock.get_institutional_flow(ticker)
-            if stock_df is not None and not stock_df.empty:
-                net_stk_shares = stock_df['buy'].sum() - stock_df['sell'].sum()
-                net_stk_lots = int(net_stk_shares / 1000)
-                if net_stk_lots > 2000:
-                    total_score += 5
-                    agent_notes.append(f"🤝 個股籌碼: 法人逆勢吃貨 ({net_stk_lots:+,} 張) (+5)")
-                elif net_stk_lots > 0:
-                    total_score += 2
-                    agent_notes.append(f"🤝 個股籌碼: 法人微幅買超 ({net_stk_lots:+,} 張) (+2)")
-        except: pass
-
-    # ==========================================
-    # 最終診斷輸出
-    # ==========================================
-    print("\n" + "⚖️ 【AI Agent 左側交易綜合診斷】 ⚖️")
-    print("-" * 64)
-    print(f"🎯 左側交易決策指數: {total_score} / 100 (越接近100越適合左側建倉)")
-    print("-" * 64)
+    print("\n" + "⚖️ 【AI Agent 左側交易綜合診斷結果】 ⚖️")
+    print("-" * 70)
+    print(f"🎯 左側交易決策指數: {total_score} / 100")
+    print(f"📌 當前系統狀態: {'🔴 危機模式 (高門檻)' if is_crisis_mode else '🟢 一般模式 (標準門檻)'}")
+    print("-" * 70)
     for n in agent_notes:
         print(f"  {n}")
     
-    print("\n💡 系統總結：")
-    if total_score >= 70:
-        print("  【強烈買進 (Strong Buy)】- 宏觀資金健康且市場充滿恐慌，正是別人恐懼我貪婪的時刻！")
-    elif total_score >= 45:
-        print("  【分批建倉 (Accumulate)】- 結構中性偏低，可利用閒置資金採取金字塔式向下建倉。")
+    print("\n💡 探員行動總結：")
+    if total_score >= buy_threshold:
+        print(f"  【強烈買進 (Strong Buy)】- 分數達標 ({total_score} >= {buy_threshold})！市場情緒極度悲觀且基底穩固，正是貪婪時刻。")
+    elif total_score >= accumulate_threshold:
+        print(f"  【分批建倉 (Accumulate)】- 分數中等 ({total_score} >= {accumulate_threshold})。建議以資金的 10%-15% 試單，往下金字塔承接。")
     elif total_score > 20:
-        print("  【觀望或減碼 (Hold/Reduce)】- 缺乏恐慌溢價或面臨外資壓盤風險，耐心等待價格回落。")
+        print(f"  【觀望等待 (Hold/Wait)】- 尚缺乏足夠的安全邊際與恐慌溢價，耐心等待更好的打擊區。")
     else:
-        print("  【高度警戒 (Danger)】- 系統偵測到嚴重籌碼壓力或宏觀資金流出，切勿接刀！")
-    print("="*64 + "\n")
+        print("  【嚴格避險 (Danger)】- 系統偵測到嚴重破壞，籌碼與資金雙輸，切勿接刀！")
+    print("="*70 + "\n")
