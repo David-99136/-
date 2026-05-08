@@ -73,7 +73,7 @@ def calculate_position_size(regime, final_score, is_crisis_mode):
 # ==========================================
 def run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix, futures_history_5d=None, bias_ratio_240ma=None, futures_min=-50000, futures_max=10000):
     market_str = "台股" if is_tw_stock else "美股"
-    print(f"\n[何景澤 AI 交易探員 - 量化架構升級版] 標的：{ticker} ({market_str})")
+    print(f"\n[交易輔助工具 - 邏輯升級版] 標的：{ticker} ({market_str})")
     print("="*70)
     
     agent_notes = []
