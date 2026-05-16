@@ -2,6 +2,7 @@ import GAFI, vix_monitor, retail_sentiment, MACD, RSI, foreign_flow, foreign_flo
 import fundamental_agent
 import us_macro
 import global_macro
+import naaim_monitor  # <--- 【新增】載入 NAAIM 綜合判定模組
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -143,6 +144,29 @@ def run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix, futures_histo
     groups["Sentiment"].append(us_vix_score)
     groups["Sentiment"].append(roc_score)
     agent_notes.append(f"🌎 全球情緒: 美股 VIX={us_vix_val:.2f} (分段得分:{us_vix_score}), 5日ROC={vix_roc:+.1f}% (動能得分:{roc_score})")
+
+    # ==========================================
+    # 【新增】NAAIM 聰明錢籌碼與 S&P 500 背離判定
+    # ==========================================
+    # 這裡我們先預設傳入一個模擬值（日後可以在 app.py 中設計讓使用者輸入）
+    # 模擬圖片中的「大盤創新高 + NAAIM 掉頭向下」危機
+    naaim_sim_val = 78
+    naaim_sim_trend = 'DOWN' 
+    
+    try:
+        naaim_res = naaim_monitor.evaluate_naaim_sp500_logic(naaim_current=naaim_sim_val, naaim_trend=naaim_sim_trend)
+        
+        # 將 NAAIM 的判斷分數加入 Flow (資金籌碼) 與 Sentiment (情緒) 的綜合評估中
+        # 由於 NAAIM 滿分與扣分範圍設定為 -15 到 +15，我們將其平移並映射至 0-100 的百分制因子中
+        # 若為嚴重背離 (-15)，將導致籌碼分數大降 0 分；若為極度恐慌買點 (+15)，則給予 100 分。
+        naaim_normalized_score = max(0, min(100, 50 + (naaim_res['score'] * 3.33)))
+        
+        groups["Flow"].append(naaim_normalized_score)
+        groups["Sentiment"].append(naaim_normalized_score)
+        agent_notes.append(f"🧠 聰明錢追蹤: {naaim_res['log']}")
+    except Exception as e:
+        agent_notes.append(f"⚠️ NAAIM 追蹤異常: {e}")
+    # ==========================================
 
     if is_tw_stock:
         # 台股 VIX 獨立加權
