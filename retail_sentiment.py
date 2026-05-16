@@ -2,111 +2,149 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 
-def get_retail_sentiment_fixed():
-    print("📡 系統啟動：正在精確對接【小台 MTX】與【微台 TMF】真實散戶多空比...")
+# ====================================================================
+# 🔑 FinMind 官方認證 Token 安全鎖 (已直接內嵌整合)
+# ====================================================================
+DEFAULT_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiRGF2aWQiLCJlbWFpbCI6ImRhdmlkLjE5NzA0MDM1QGdtYWlsLmNvbSIsInRva2VuX3ZlcnNpb24iOjB9.B2xbE3_8MixVtAAlNFeho9EnNrGOQ9ijwBWgckT0B3o"
+
+def get_valid_trading_date():
+    """
+    【核心防呆機制】：自動避開週末與資料未公布的時間
+    """
+    now = datetime.now()
+    if now.weekday() == 5: target = now - timedelta(days=1)
+    elif now.weekday() == 6: target = now - timedelta(days=2)
+    elif now.weekday() == 0 and now.hour < 15: target = now - timedelta(days=3)
+    elif now.hour < 15: target = now - timedelta(days=1)
+    else: target = now
+    return target
+
+def get_retail_sentiment_fixed(manual_mtx_ratio=None, manual_tmf_ratio=None, api_token=None):
+    """
+    獲取最新真實散戶多空比 
+    (時序動態對比版：完美計算昨日與前日差額，輸出 增減% 數)
+    """
+    print("\n📡 [Matrix V3] 啟動即時籌碼監控模組：對接真實世界最新【小台】與【微台】留倉...")
     
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    final_result = {"ratio": 0.0, "label": "中性", "change": 0.0}
     
-    targets = {"MTX": "小台指", "TMF": "微台指"}
+    # 優先權 1：手動輸入強制覆蓋邏輯
+    if manual_mtx_ratio is not None and manual_tmf_ratio is not None:
+        print("⚡ 【安全機制】偵測到使用者執行手動覆蓋，直接導向指定數值。")
+        if manual_mtx_ratio >= 10: status = "⚠️ 【散戶過度看多】"
+        elif manual_mtx_ratio <= -10: status = "🩸 【散戶極度看空】"
+        else: status = "🟢 【散戶情緒中性】"
+        final_result["ratio"] = manual_mtx_ratio
+        final_result["label"] = status
+        return final_result
+
+    token_to_use = api_token if api_token else DEFAULT_TOKEN
+    target_date = get_valid_trading_date()
+    end_date = target_date.strftime("%Y-%m-%d")
+    start_date = (target_date - timedelta(days=25)).strftime("%Y-%m-%d") # 擴大範圍以確保抓到足夠的歷史交易日
+    
+    targets = {
+        "小台指": {"inst_id": "MXF", "daily_id": "MTX"},
+        "微台指": {"inst_id": "TMF", "daily_id": "TMF"}
+    }
     url = "https://api.finmindtrade.com/api/v4/data"
-    
-    # 回傳給 agent 的最終數據
-    final_result = {"ratio": 0.0, "label": "中性"}
 
     try:
-        for code, label in targets.items():
-            # ==========================================
-            # 1. 取得法人未平倉量 (計算散戶淨部位)
-            # ==========================================
+        for name, codes in targets.items():
+            # --------------------------------------------------
+            # 1. 抓取三大法人歷史未平倉序列
+            # --------------------------------------------------
             params_inst = {
                 "dataset": "TaiwanFuturesInstitutionalInvestors",
-                "data_id": code,
+                "data_id": codes["inst_id"],
                 "start_date": start_date,
-                "end_date": end_date
+                "end_date": end_date,
+                "token": token_to_use
             }
-            res_inst = requests.get(url, params=params_inst, timeout=15)
-            data_inst = res_inst.json()
+            res_inst = requests.get(url, params=params_inst, timeout=15).json()
             
-            if not data_inst.get('data'):
-                # 備援：若 MTX 沒抓到，嘗試 MXF
-                if code == "MTX":
-                    params_inst["data_id"] = "MXF"
-                    res_inst = requests.get(url, params=params_inst, timeout=15)
-                    data_inst = res_inst.json()
-                    if not data_inst.get('data'): continue
-                else: continue
+            # 備援機制
+            if not res_inst.get('data') and codes["inst_id"] == "MXF":
+                params_inst["data_id"] = "MTX"
+                res_inst = requests.get(url, params=params_inst, timeout=15).json()
                 
-            df_inst = pd.DataFrame(data_inst['data'])
-            latest_date = df_inst['date'].max()
-            current_inst_df = df_inst[df_inst['date'] == latest_date]
-
-            l_col = 'long_open_interest_balance_volume'
-            s_col = 'short_open_interest_balance_volume'
-
-            # 三大法人淨部位
-            inst_net = current_inst_df[l_col].sum() - current_inst_df[s_col].sum()
+            if not res_inst.get('data'): continue
             
-            # 散戶淨部位 = -(三大法人淨部位)
-            retail_net = -inst_net
+            df_inst = pd.DataFrame(res_inst['data'])
+            
+            # 按日期加總三大法人部位 (不分法人別)，反推散戶淨留倉
+            df_inst_daily = df_inst.groupby('date').apply(
+                lambda x: -(x['long_open_interest_balance_volume'].sum() - x['short_open_interest_balance_volume'].sum())
+            ).reset_index(name='retail_net')
+            df_inst_daily = df_inst_daily.sort_values('date').reset_index(drop=True)
 
-            # ==========================================
-            # 2. 取得全市場未平倉量 (全市場 OI 作為真實分母)
-            # ==========================================
+            # --------------------------------------------------
+            # 2. 抓取全市場總未平倉量序列 (OI)
+            # --------------------------------------------------
             params_daily = {
                 "dataset": "TaiwanFuturesDaily",
-                "data_id": code,
-                "start_date": latest_date,
-                "end_date": latest_date
+                "data_id": codes["daily_id"],
+                "start_date": start_date,
+                "end_date": end_date,
+                "token": token_to_use
             }
-            res_daily = requests.get(url, params=params_daily, timeout=15)
-            data_daily = res_daily.json()
+            res_daily = requests.get(url, params=params_daily, timeout=15).json()
             
-            total_market_oi = 0
-            if data_daily.get('data'):
-                df_daily = pd.DataFrame(data_daily['data'])
-                if 'open_interest' in df_daily.columns:
-                    # 加總各個合約月份(近月、遠月)的未平倉量
-                    total_market_oi = df_daily['open_interest'].sum()
-
-            # ==========================================
-            # 3. 計算真實散戶多空比
-            # ==========================================
-            if total_market_oi > 0:
-                # 正確公式：散戶淨部位 / 全市場未平倉量
-                retail_ratio = (retail_net / total_market_oi) * 100
-            else:
-                retail_ratio = 0.0
-
-            print("\n" + "="*50)
-            print(f"📊 標的：{label} ({code})")
-            print(f"📅 數據日期: {latest_date}")
-            print(f"📈 散戶淨部位：{retail_net:+,} 口")
+            if not res_daily.get('data') and codes["daily_id"] == "MTX":
+                params_daily["data_id"] = "MXF"
+                res_daily = requests.get(url, params=params_daily, timeout=15).json()
+                
+            if not res_daily.get('data'): continue
             
-            if total_market_oi > 0:
-                print(f"🏛️ 全市場 OI：{total_market_oi:,.0f} 口")
-                print(f"📉 真實多空比：{retail_ratio:.2f}%")
-            else:
-                print("⚠️ 無法獲取全市場 OI，切換為口數模式。")
-
-            # 判斷邏輯 (依照真實多空比，通常 ±10%~15% 就屬於極端狀態)
-            if retail_ratio >= 15:
-                status = "⚠️ 【過度看多】 (散戶追高，提防反轉)"
-            elif retail_ratio <= -15:
-                status = "🚨 【極度看空】 (散戶停損，醞釀買點)"
-            else:
-                status = "🟢 【情緒中性】"
-
-            print(f"⚖️ 市場情緒：{status}")
-            print("="*50)
+            df_daily = pd.DataFrame(res_daily['data'])
+            df_daily_sum = df_daily.groupby('date')['open_interest'].sum().reset_index(name='total_oi')
             
-            # 將指標回傳給 agent
-            if code in ["MTX", "MXF"] and total_market_oi > 0:
-                final_result["ratio"] = retail_ratio
+            # --------------------------------------------------
+            # 3. 合併數據，計算最新兩天的多空比與增減差額
+            # --------------------------------------------------
+            df_merged = pd.merge(df_inst_daily, df_daily_sum, on='date', how='inner')
+            df_merged['retail_ratio'] = (df_merged['retail_net'] / df_merged['total_oi']) * 100
+            df_merged = df_merged.sort_values('date').reset_index(drop=True)
+
+            if len(df_merged) < 2:
+                print(f"⚠️ {name} 歷史序列長度不足，無法計算增減比例。")
+                continue
+
+            # 提取最新一天(T)與前一天(T-1)的資料
+            row_latest = df_merged.iloc[-1]
+            row_prev = df_merged.iloc[-2]
+
+            latest_date = row_latest['date']
+            ratio_latest = row_latest['retail_ratio']
+            ratio_prev = row_prev['retail_ratio']
+            
+            # 計算增減百分點 (本日多空比 - 昨日多空比)
+            ratio_change = ratio_latest - ratio_prev
+
+            # 格式化正負號字串
+            change_str = f"+{ratio_change:.2f}%" if ratio_change >= 0 else f"{ratio_change:.2f}%"
+
+            print("\n" + "✨"*25)
+            print(f"📊 籌碼監測：{name}")
+            print(f"📅 觀測交易日: {latest_date}")
+            print(f"📉 真實散戶多空比: {ratio_latest:.2f}% (較前日變動: {change_str})")
+            print(f"🏛️ 散戶留倉淨部位: {row_latest['retail_net']:+,} 口 / 全市場 OI: {row_latest['total_oi']:,.0f} 口")
+            
+            # 決策矩陣評語
+            if ratio_latest >= 10: status = "⚠️ 【散戶過度看多】 (市場擁擠，防範高檔反轉)"
+            elif ratio_latest <= -10: status = "🩸 【散戶極度看空】 (市場恐慌，醞釀左側買點)"
+            else: status = "🟢 【散戶情緒中性】"
+            print(f"⚖️ 決策矩陣評語：{status}")
+            print("✨"*25)
+
+            # 將主要指標（小台指）傳遞給主引擎 agent.py
+            if name == "小台指":
+                final_result["ratio"] = ratio_latest
                 final_result["label"] = status
+                final_result["change"] = ratio_change
 
     except Exception as e:
-        print(f"❌ 系統錯誤：{str(e)}")
+        print(f"❌ 數據差額動態解析異常：{str(e)}")
         
     return final_result
 
