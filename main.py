@@ -45,8 +45,8 @@ class LoadingSpinner:
 
 def main():
     # --- 狀態記憶區 (全域於迴圈外) ---
-    last_vix = 20.0
-    last_futures = 0
+    last_vix_tw = 20.0 # 記憶台股 VIX
+    last_futures_tw = 0 # 記憶外資期指淨額
 
     while True:
         print("\n" + "🤖" + "="*54 + "🤖")
@@ -79,23 +79,27 @@ def main():
         manual_futures = 0
 
         if is_tw_stock:
-            # 1. VIX 記憶邏輯
-            v_prompt = f"👉 (戰略層) 請輸入【台股 VIX】 (目前記憶: {last_vix})\n按 Enter 沿用，或輸入新值: "
+            # 1. 台股 VIX 記憶邏輯
+            v_prompt = f"👉 (戰略層) 請輸入【台股 VIX】 (目前記憶: {last_vix_tw:.2f})\n按 Enter 沿用，或輸入新值: "
             v_input = input(v_prompt).strip()
             if v_input:
-                try: last_vix = float(v_input)
-                except: print("⚠️ 格式錯誤，沿用舊值")
-            manual_vix = last_vix
+                try: 
+                    last_vix_tw = float(v_input)
+                except ValueError:
+                    print("⚠️ 格式錯誤：台股 VIX 必須為數字，沿用舊值。")
+            manual_vix = last_vix_tw
 
-            # 2. 期指記憶邏輯
-            f_prompt = f"👉 (戰略層) 請輸入【外資期指淨額】 (目前記憶: {last_futures:+,})\n按 Enter 沿用，或輸入新值: "
+            # 2. 外資期指記憶邏輯
+            f_prompt = f"👉 (戰略層) 請輸入【外資期指淨額】 (目前記憶: {last_futures_tw:+,})\n按 Enter 沿用，或輸入新值: "
             f_input = input(f_prompt).strip()
             if f_input:
-                try: last_futures = int(f_input)
-                except: print("⚠️ 格式錯誤，沿用舊值")
-            manual_futures = last_futures
+                try: 
+                    last_futures_tw = int(f_input)
+                except ValueError:
+                    print("⚠️ 格式錯誤：外資期指淨額必須為整數，沿用舊值。")
+            manual_futures = last_futures_tw
         else:
-            print("🌎 美股模式：VIX 與大盤量價將自動從美股市場同步。")
+            print("🌎 美股模式：VIX 與大盤量價將自動從美股市場同步。無需手動輸入。")
 
         print("-" * 58)
         
@@ -103,6 +107,7 @@ def main():
         spinner = LoadingSpinner()
         try:
             spinner.start()
+            # 將 manual_vix 統一傳入，agent 內部會判斷是否為台股並使用
             agent.run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix)
         except Exception as e:
             print(f"🚨 系統異常: {e}")
