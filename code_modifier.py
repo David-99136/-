@@ -1,6 +1,6 @@
-#   每次重新開啟Terminal時皆須重新輸入下面的api金鑰
+#   每次重新開啟Terminal時皆須重新輸入下面的api金鑰，金鑰在 google ai studio的API金鑰頁面可以找到，請確保金鑰有啟用Gemini API的權限。
 #   $env:GEMINI_API_KEY="你的金鑰"
-#   AIzaSyDOsca3tyHBXS6W7GcWIubTs-A4jty_PHc
+
 import os
 import json
 from google import genai

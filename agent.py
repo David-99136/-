@@ -243,27 +243,44 @@ def run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix, futures_min=-
         macd_signals = None
         
         # RSI Calculation
+# RSI Calculation
         try:
-            rsi_res_df = RSI.get_40_days_rsi(ticker_df) # 假設 RSI 模組現在接收 DataFrame
+            rsi_res_df = RSI.get_40_days_rsi(ticker_df) 
             if rsi_res_df is not None and not rsi_res_df.empty:
                 curr_rsi = rsi_res_df['RSI'].iloc[-1]
-                # 檢查過去 10 天內有多少天 RSI < 30
                 days_under_30 = (rsi_res_df['RSI'].tail(10) < 30).sum()
                 
-                if days_under_30 >= 4:
+                # --- 新增：呼叫 RSI 動能反轉訊號 ---
+                rsi_signals = RSI.calculate_rsi_signals(ticker_df)
+                is_rsi_bullish = rsi_signals.get('bullish_reversal') if rsi_signals else False
+                is_rsi_bearish = rsi_signals.get('bearish_reversal') if rsi_signals else False
+
+                # 💡 邏輯優化：如果出現了 RSI 底部黃金交叉，就打破「鈍化過濾」的限制
+                if days_under_30 >= 4 and not is_rsi_bullish:
                     # 強勢空頭【鈍化區】，沒收 RSI 加分，改看 MACD 動能
-                    macd_signals = MACD.calculate_macd_signals(ticker_df) # 假設 MACD 模組接收 DataFrame
+                    macd_signals = MACD.calculate_macd_signals(ticker_df) 
                     macd_momentum_score = 0
                     if macd_signals and macd_signals.get('golden_cross') and macd_signals.get('histogram_positive_flip'):
-                        macd_momentum_score = 50 # 中等分數反映 MACD 積極動能
+                        macd_momentum_score = 50 
                         agent_notes.append(f"🎯 技術面: 強勢空頭【鈍化區】，RSI 沒收加分，改看 MACD 動能 ({macd_momentum_score}/100)。")
                     else:
-                        agent_notes.append(f"⚠️ 技術面: 強勢空頭【鈍化區】，RSI 與 MACD 皆無明顯動能。")
+                        agent_notes.append(f"⚠️ 技術面: 強勢空頭【鈍化區】，RSI 與 MACD 皆無明顯反轉動能。")
                     groups["Technical"].append(macd_momentum_score)
                 else:
-                    rsi_score = calculate_dynamic_score(curr_rsi, 15, 40, 100, inverse=True) # RSI 越低分越高 (15->100, 40->0)
+                    # 正常動態給分
+                    rsi_score = calculate_dynamic_score(curr_rsi, 15, 40, 100, inverse=True) 
+                    
+                    # --- ⚡ 動能衰竭策略加權 ---
+                    if is_rsi_bullish:
+                        rsi_score = min(100, rsi_score + 30) # 底部交叉，強力加分
+                        agent_notes.append(f"🔥 技術面: 偵測到 RSI 底部黃金交叉 (<=32區間)！動能反轉看漲，強力加分 (+30)。")
+                    elif is_rsi_bearish:
+                        rsi_score = max(0, rsi_score - 30) # 頂部交叉，防禦扣分
+                        agent_notes.append(f"🚨 技術面: 偵測到 RSI 高檔死亡交叉 (>=70區間)！動能衰竭預備回調，防禦扣分 (-30)。")
+                    else:
+                        agent_notes.append(f"🎯 技術面: 動態 RSI 得分 ({rsi_score}/100)。")
+
                     groups["Technical"].append(rsi_score)
-                    agent_notes.append(f"🎯 技術面: 動態 RSI 得分 ({rsi_score}/100)。")
             else:
                 agent_notes.append("⚠️ 無法計算 RSI，跳過 RSI 因子。")
         except Exception as e:
