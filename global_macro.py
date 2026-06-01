@@ -8,7 +8,8 @@ def get_capital_flow_status():
     result = {
         "macro_score": 0, 
         "notes": [],
-        "is_black_swan": False
+        "is_black_swan": False,
+        "gold_month_change_percent": 0.0
     }
     
     tickers = {
@@ -58,6 +59,7 @@ def get_capital_flow_status():
         # C. 黑天鵝與避險情緒 (黃金極端波動)
         if "GOLD" in data:
             gold = data["GOLD"]
+            result["gold_month_change_percent"] = float(gold["roc"])
             result["notes"].append(f"🛡️ 【避險雷達】黃金期貨: ${gold['current']:.1f}/oz (月變動: {gold['roc']:+.2f}%)")
             
             if gold['roc'] > 8.0:

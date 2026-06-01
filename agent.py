@@ -123,7 +123,13 @@ def run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix, futures_min=-
     if ticker_df is None: 
         agent_notes.append(f"🚨 無法獲取 {ticker} 數據，跳過詳細分析。")
         print("\n" + "⚠️ 診斷無法完成，請檢查標的代號。" + "\n" + "="*70 + "\n")
-        return
+        return {
+            "ok": False,
+            "ticker": ticker,
+            "market": market_str,
+            "error": f"無法獲取 {ticker} 數據，請檢查標的代號。",
+            "notes": agent_notes
+        }
 
     # 2. 獲取宏觀數據
     macro_data = {}
@@ -143,7 +149,7 @@ def run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix, futures_min=-
         vix_df = _fetch_ticker_data("^VIX", period="6d") 
         if vix_df is not None and len(vix_df) >= 2:
             us_vix_val = float(vix_df['Close'].iloc[-1])
-            prev_us_vix = float(vix_df['Close'].iloc[-2]) # 改為倒數第二個確保 5日變化率是相對過去
+            prev_us_vix = float(vix_df['Close'].iloc[0]) # 約 5 個交易日前的 VIX
             vix_roc_percent = ((us_vix_val - prev_us_vix) / prev_us_vix) * 100
     except Exception as e:
         agent_notes.append(f"⚠️ 無法獲取或計算美股 VIX 數據: {e}")
@@ -406,3 +412,29 @@ def run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix, futures_min=-
     print(f"📊 最終加權決策指數: {final_score:.1f} / 100")
     print(f"💰 【風控與倉位建議】: {recommended_position}")
     print("="*70 + "\n")
+
+    # 額外回傳結構化資料給網頁使用。終端機版仍保留原本的文字輸出，
+    # 因此 main.py 與既有分析流程不需要改動。
+    return {
+        "ok": True,
+        "ticker": ticker,
+        "market": market_str,
+        "price_history": ticker_df[["Close"]].copy(),
+        "current_price": float(ticker_df["Close"].iloc[-1]),
+        "regime": current_regime,
+        "regime_desc": regime_info["desc"],
+        "strategy": strategy_desc,
+        "recommended_position": recommended_position,
+        "final_score": float(final_score),
+        "group_scores": {name: float(score) for name, score in avg_scores.items()},
+        "group_factors": groups,
+        "notes": agent_notes,
+        "metrics": {
+            "us_vix": float(us_vix_val),
+            "vix_roc_percent": float(vix_roc_percent),
+            "tw_vix": float(manual_vix) if is_tw_stock else None,
+            "foreign_futures": int(manual_futures) if is_tw_stock else None,
+            "gold_month_change_percent": float(gold_mom_percent),
+            "bias_ratio_240ma": float(bias_ratio_240ma) if bias_ratio_240ma is not None else None
+        }
+    }
