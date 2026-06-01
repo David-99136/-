@@ -1,4 +1,4 @@
-"""Streamlit 單頁版交易輔助儀表板。
+r"""Streamlit 單頁版交易輔助儀表板。
 
 啟動方式：
     streamlit run app.py
