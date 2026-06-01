@@ -2,7 +2,8 @@
 
 啟動方式：
     streamlit run app.py
-
+    #亦可直接執行此命令獲得網址
+    # & 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m streamlit run app.py
 畫面只負責蒐集輸入與呈現結果，所有分析邏輯仍由 agent.py 統一處理。
 """
 
