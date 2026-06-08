@@ -70,6 +70,74 @@ def calculate_fear_greed_score(fg_index):
     # 25-75 之間反向歸一化, 25->100分, 75->0分
     return calculate_dynamic_score(fg_index, 25, 75, 100, inverse=True)
 
+def calculate_futures_tolerance(ticker_df, base_futures_min, base_futures_max):
+    """
+    依照標的價格趨勢調整外資空單容忍度。
+    股價越強，空單下限放寬；股價越弱，空單下限收窄。
+    """
+    neutral_result = {
+        "price_trend_status": "NEUTRAL",
+        "price_trend_reason": "資料不足，沿用原始外資空單容忍區間",
+        "price_change_20d_percent": 0.0,
+        "futures_tolerance_factor": 1.0,
+        "adjusted_futures_min": int(base_futures_min),
+        "adjusted_futures_max": int(base_futures_max),
+    }
+
+    if ticker_df is None or len(ticker_df) < 60:
+        return neutral_result
+
+    close_series = ticker_df["Close"].dropna()
+    if len(close_series) < 60:
+        return neutral_result
+
+    current_price = float(close_series.iloc[-1])
+    previous_20d_price = float(close_series.iloc[-21])
+    ma20 = float(close_series.rolling(window=20).mean().iloc[-1])
+    ma60 = float(close_series.rolling(window=60).mean().iloc[-1])
+
+    if previous_20d_price == 0:
+        return neutral_result
+
+    price_change_20d_percent = ((current_price - previous_20d_price) / previous_20d_price) * 100
+
+    is_strong_uptrend = price_change_20d_percent >= 8 and current_price > ma20 > ma60
+    is_uptrend = price_change_20d_percent >= 3 or current_price > ma20
+    is_strong_downtrend = price_change_20d_percent <= -8 and current_price < ma20 < ma60
+    is_downtrend = price_change_20d_percent <= -3 or current_price < ma20
+
+    if is_strong_uptrend:
+        price_trend_status = "STRONG_UPTREND"
+        futures_tolerance_factor = 1.35
+        price_trend_reason = "20日漲幅明顯且價格站上20MA/60MA，外資空單容忍度大幅提高"
+    elif is_uptrend:
+        price_trend_status = "UPTREND"
+        futures_tolerance_factor = 1.20
+        price_trend_reason = "價格偏多，外資空單容忍度提高"
+    elif is_strong_downtrend:
+        price_trend_status = "STRONG_DOWNTREND"
+        futures_tolerance_factor = 0.65
+        price_trend_reason = "20日跌幅明顯且價格跌破20MA/60MA，外資空單容忍度大幅下降"
+    elif is_downtrend:
+        price_trend_status = "DOWNTREND"
+        futures_tolerance_factor = 0.80
+        price_trend_reason = "價格偏弱，外資空單容忍度下降"
+    else:
+        price_trend_status = "NEUTRAL"
+        futures_tolerance_factor = 1.00
+        price_trend_reason = "價格處於中性區間，沿用原始外資空單容忍度"
+
+    adjusted_futures_min = int(base_futures_min * futures_tolerance_factor)
+
+    return {
+        "price_trend_status": price_trend_status,
+        "price_trend_reason": price_trend_reason,
+        "price_change_20d_percent": float(price_change_20d_percent),
+        "futures_tolerance_factor": float(futures_tolerance_factor),
+        "adjusted_futures_min": adjusted_futures_min,
+        "adjusted_futures_max": int(base_futures_max),
+    }
+
 # ==========================================
 # 模組 1：市場狀態機 (Regime Detector)
 # ==========================================
@@ -168,6 +236,7 @@ def run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix, futures_min=-
     groups = {
         "Sentiment": [], "Flow": [], "Fundamental": [], "Technical": []
     }
+    futures_tolerance_data = None
 
     # --- A. 情緒因子 (Sentiment) ---
     # 美股 VIX
@@ -326,6 +395,8 @@ def run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix, futures_min=-
 
     # --- 僅台股模式下啟用的因子 (Sentiment & Flow) ---
     if is_tw_stock:
+        futures_tolerance_data = calculate_futures_tolerance(ticker_df, futures_min, futures_max)
+
         # 台股 VIX 獨立加權
         tw_vix_score = calculate_vix_score(manual_vix)
         groups["Sentiment"].append(tw_vix_score)
@@ -354,11 +425,28 @@ def run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix, futures_min=-
 
         # 外資期指淨額 (手動輸入)
         if manual_futures != 0: # 僅在有手動輸入時才加入考量
-            # 將期指淨額從 futures_min 到 futures_max 映射到 0-100
+            adjusted_futures_min = futures_tolerance_data["adjusted_futures_min"]
+            adjusted_futures_max = futures_tolerance_data["adjusted_futures_max"]
+
+            # 將期指淨額從調整後區間映射到 0-100
             # 淨空單越多 (趨近 min) 得分越高，淨多單越多 (趨近 max) 得分越低
-            futures_score = calculate_dynamic_score(manual_futures, futures_min, futures_max, 100, inverse=True)
+            futures_score = calculate_dynamic_score(
+                manual_futures,
+                adjusted_futures_min,
+                adjusted_futures_max,
+                100,
+                inverse=True,
+            )
             groups["Flow"].append(futures_score)
-            agent_notes.append(f"📊 資金籌碼: 外資期指淨額 {manual_futures:+,} (得分:{futures_score}/100)")
+            agent_notes.append(
+                f"📊 資金籌碼: 外資期指淨額 {manual_futures:+,} "
+                f"(趨勢:{futures_tolerance_data['price_trend_status']}, "
+                f"20日:{futures_tolerance_data['price_change_20d_percent']:+.1f}%, "
+                f"容忍係數:{futures_tolerance_data['futures_tolerance_factor']:.2f}, "
+                f"調整區間:{adjusted_futures_min:+,}~{adjusted_futures_max:+,}, "
+                f"得分:{futures_score}/100)"
+            )
+            agent_notes.append(f"🧭 空單容忍度: {futures_tolerance_data['price_trend_reason']}")
 
         # 外資現貨買賣超 (個股)
         try:
@@ -434,6 +522,11 @@ def run_diagnosis(ticker, manual_futures, is_tw_stock, manual_vix, futures_min=-
             "vix_roc_percent": float(vix_roc_percent),
             "tw_vix": float(manual_vix) if is_tw_stock else None,
             "foreign_futures": int(manual_futures) if is_tw_stock else None,
+            "price_trend_status": futures_tolerance_data["price_trend_status"] if futures_tolerance_data else None,
+            "price_change_20d_percent": float(futures_tolerance_data["price_change_20d_percent"]) if futures_tolerance_data else None,
+            "futures_tolerance_factor": float(futures_tolerance_data["futures_tolerance_factor"]) if futures_tolerance_data else None,
+            "adjusted_futures_min": int(futures_tolerance_data["adjusted_futures_min"]) if futures_tolerance_data else None,
+            "adjusted_futures_max": int(futures_tolerance_data["adjusted_futures_max"]) if futures_tolerance_data else None,
             "gold_month_change_percent": float(gold_mom_percent),
             "bias_ratio_240ma": float(bias_ratio_240ma) if bias_ratio_240ma is not None else None
         }

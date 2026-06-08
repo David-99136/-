@@ -320,6 +320,15 @@ def render_dashboard(result, raw_log):
             input_metrics.append(("台股 VIX", f"{metrics['tw_vix']:.2f}"))
         if metrics["foreign_futures"] is not None:
             input_metrics.append(("外資期指淨額", f"{metrics['foreign_futures']:+,} 口"))
+        if metrics.get("futures_tolerance_factor") is not None:
+            input_metrics.append(("價格20日變化", f"{metrics['price_change_20d_percent']:+.2f}%"))
+            input_metrics.append(("空單容忍係數", f"{metrics['futures_tolerance_factor']:.2f}"))
+            input_metrics.append(
+                (
+                    "調整後期指區間",
+                    f"{metrics['adjusted_futures_min']:+,} ~ {metrics['adjusted_futures_max']:+,} 口",
+                )
+            )
         st.dataframe(pd.DataFrame(input_metrics, columns=["項目", "數值"]), hide_index=True, width="stretch")
 
     with detail_cols[1]:
